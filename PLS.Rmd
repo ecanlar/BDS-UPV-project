@@ -1,0 +1,194 @@
+---
+title: 'BDS Project: PLS'
+author: "Eva Cantín Larumbe"
+date: "2024-01-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+X = read.csv("X_scaled.csv")
+y = read.csv("y_over.csv")
+y = y$diagnostic
+```
+
+```{r}
+set.seed(123)
+
+# Determine the number of rows in the dataset
+num_rows <- nrow(X)
+
+# Create indices for splitting (80% train, 20% test)
+train_indices <- sample(1:num_rows, 0.8 * num_rows, replace = FALSE)
+test_indices <- setdiff(1:num_rows, train_indices)
+
+# Create training and testing datasets
+X_train <- X[train_indices, ]
+y_train <- as.factor(y[train_indices])
+
+X_test <- X[test_indices, ]
+y_test <- as.factor(y[test_indices])
+```
+
+
+# Model creation
+
+```{r}
+library(ropls)
+mypls = opls(x = X_train, y = factor(y_train), predI = 10, crossvalI = 10, scaleC = "none", fig.pdfC = 'none')
+
+mypls@summaryDF
+
+plot(mypls)
+mypls@modelDF
+```
+
+## Selection of PLS components
+
+```{r plotNC, echo=TRUE, message=FALSE, warning=FALSE}
+# Visualizamos la R2
+plot(1:length(mypls@modelDF$`R2Y(cum)`), mypls@modelDF$`R2Y(cum)`, type = "o", pch = 16, col = "#00BFC4", lwd = 2, xlab = "Components", ylab = "", ylim = c(-0.1,1), main = "PLS-DA model")
+
+# Y después la Q2
+lines(1:length(mypls@modelDF$`Q2(cum)`), mypls@modelDF$`Q2(cum)`, type = "o", pch = 16, col = "#F8766D", lwd = 2, ylim=c(-0.1, 1))
+
+# Límite en Q2
+abline(h = 0.5, col = "#F8766D", lty = 2)
+
+# lEYENDA
+legend("bottomleft", c("R2Y", "Q2"), lwd = 2, col = c("#00BFC4", "#F8766D"), bty = "n")
+```
+
+The range of R2 is in between 0 and 1, the higher level, the higher predictive accuracy. According to Chin (1998) and Henseler et al. (2009), R2 value greater than 0.67 indicate a high predictive accuracy, a range of 0.33 - 0.67 indicated a moderated effect, R2 between 0.19 and 0.33 indicate low effect, while the R2 value below 0.19 considered unacceptable (the exogenous variables unable to explain the endogenous dependent variable). While Q2 value of greater than zero for a particular reflective endogenous latent variable indicate the path model’s predictive relevance for a specific dependent construct (Hair et al. 2016). In this case, we should consider 6 components.
+
+```{r}
+mypls = opls(x = X_train, y = factor(y_train), predI = 6, crossvalI = 10, scaleC = "standard", fig.pdfC = 'none')
+
+mypls@summaryDF
+
+plot(mypls)
+mypls@modelDF
+```
+
+# Model Validation
+
+## Severe Outlier Detection with T2-Hotelling
+We can detect possible outliers for both matrix X and Y. 
+
+```{r T2a, fig.width=5, fig.height=5}
+
+plot(x = mypls, typeVc = "x-score",
+     parAsColFcVn = y_train, parCexN = 0.8, parCompVi = c(1, 2),
+     parEllipsesL = TRUE, parLabVc = rownames(X_train), parPaletteVc = NA,
+     parTitleL = TRUE, parCexMetricN = NA)
+
+plot(x = mypls, typeVc = "x-score",
+     parAsColFcVn = y_train, parCexN = 0.8, parCompVi = c(1, 3),
+     parEllipsesL = TRUE, parLabVc = rownames(X_train), parPaletteVc = NA,
+     parTitleL = TRUE, parCexMetricN = NA)
+```
+## 
+
+```{r T2b, fig.width=5, fig.height=5}
+#retrieve Scores
+misScores = mypls@scoreMN
+
+varT = apply(misScores, 2, var) #component variance
+miT2 = colSums(t(misScores**2) / varT) #calculate T2-Hotelling
+N = nrow(X)
+A = 6
+F95 = A*(N**2 - 1)/(N*(N - A)) * qf(0.95, A, N-A); F95
+F99 = A*(N**2 - 1)/(N*(N - A)) * qf(0.99, A, N-A); F99
+plot(1:length(miT2), miT2, type = "l", xlab = "Individuals", ylab = "T2",
+     main = "PLS: T2-Hotelling", ylim = c(0,100))
+abline(h = F95, col = "orange", lty = 2, lwd = 2)
+abline(h = F99, col = "red3", lty = 2, lwd = 2)
+
+cat("There are", length(which(miT2 > F95)), "severe outliers when there should be", nrow(X_train)*0.05)
+
+cat("\nThere are", length(which(miT2 > F99)), "severe outliers when there should be", nrow(X_train)*0.01)
+
+```
+
+
+
+
+## Detection of Outliers with Residual Sum of Squares (Model Distance)
+
+In the following graph, we represent the RSS and its 95% confidence limit. The graph of the distance to the model would be equivalent but calculating the square root of the RSS (and its corresponding limit).
+
+```{r SCR, fig.width=5, fig.height=5}
+myT = mypls@scoreMN #scores
+myP = mypls@loadingMN #loadings
+
+#IMPORTANT
+myE = scale(X_train) - myT%*%t(myP) #E = Y-XB. 
+
+mySCR = rowSums(myE^2)   # SPE 
+plot(1:length(mySCR), mySCR, type = "l", main = "RSS", 
+     ylab = "d", xlab = "Individuals", ylim = c(0,300))
+g = var(mySCR)/(2*mean(mySCR))
+h = (2*mean(mySCR)^2)/var(mySCR)
+chi2lim = g*qchisq(0.95, df = h)
+abline(h = chi2lim, col = 2, lty = 2)
+```
+
+
+Conclusion: In this case, there are r sum(mySCR > chi2lim) individuals outside the 95% limit. Since r sum(mySCR > chi2lim) < r 0.05*nrow(X_train), there's no need to remove any observations.
+
+
+## Interpretación del modelo
+Hacemos un gráfico de scores
+```{r interpr, message=FALSE}
+colores = c("blue", "red"); names(colores) = levels(y_train)
+
+#Scores plot
+plot(mypls1@scoreMN, col = colores[y_train], pch = 20, asp = 1,
+     main = "PLS-DA: Score plot")
+legend("topright", names(colores), fill = colores, bty = "n", ncol = 3)
+
+plot(x = mypls, typeVc = "x-loading",
+     parAsColFcVn = y_train, parCexN = 0.8, parCompVi = c(1, 3),
+     parEllipsesL = TRUE, parLabVc = rownames(X_train), parPaletteVc = NA,
+     parTitleL = TRUE, parCexMetricN = NA)
+
+plot(x = mypls, typeVc = "xy-weight",
+     parAsColFcVn = y_train, parCexN = 0.8, parCompVi = c(1, 3),
+     parEllipsesL = TRUE, parLabVc = rownames(X_train), parPaletteVc = NA,
+     parTitleL = TRUE, parCexMetricN = NA)
+
+
+```
+
+A comprehensive view of the global importance of each variable in our PLS model is obtained from the VIP (Variable Importance in Projection) plot. The VIP is an aggregated measure of the influence of each variable X on the variable Y (etiopathogenic group).
+
+```{r vip}
+barplot(sort(mypls@vipVn, decreasing = TRUE), main = "VIP", las = 2, cex.names=0.5) 
+
+abline(h = 1, col = 3, lty = 2) 
+abline(h = 0.8, col = 2, lty = 2) 
+```
+
+
+
+Regarding the VIP, we have r sum(mypls@vipVn>1) variables that exceed the value of 1. Therefore, these variables can be considered important for prediction. These variables are: r names(which(mypls@vipVn>1)). Hence, these variables aid in predicting the diagnosis of a glioma.
+
+Moreover, considering that variables with a VIP less than 0.8 are not very relevant, we have chosen to represent this value on the graph. The variables that do not exceed this threshold, and thus are not relevant for prediction, are: r names(which(mypls4@vipVn<0.8)). Consequently, these variables do not contribute to predicting the diagnosis of a glioma.
+
+```{r}
+mypred2 = predict(mypls, X_test)
+caret::confusionMatrix(mypred2, y_test, mode="everything")
+as.table(confusionMatrix(mypred2, y_test))
+```
+
+```{r}
+coef = mypls@coefficientMN
+coef_ord= sort(coef[,1], decreasing = TRUE)
+
+barplot(coef_ord , col=ifelse(sort(coef[,1], decreasing = TRUE) > 0, 3, 2), main='Regression coefficients plot', las=2)
+```
+
+
